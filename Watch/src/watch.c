@@ -1,9 +1,9 @@
-#include <tizen.h>
-#include "watch.h"
-#include <cairo.h>
-#include <math.h>
-
+#include "watch1.h"
+#include "MyInclude.h"
+#include <strings.h>
+#include <string.h>
 #define WATCH_RADIUS 180
+#define TEXT_BUF_SIZE 256
 
 typedef struct appdata {
 	Evas_Coord width;
@@ -25,9 +25,92 @@ typedef struct appdata {
 	cairo_pattern_t *amb_hour_needle_color;
 	cairo_pattern_t *amb_bkg1_color;
 	cairo_pattern_t *amb_bkg2_color;
+
+
+	Evas_Object *alarm_view;
+	//Eext_Circle_Surface *circle_surface;
+	Elm_Object_Item *basic_item;
+	char *saved_time;
+	char *alarm_id;
+	const char *instance_id;
+	int alarm_on;
+
+	int root_width;
+	int root_height;
+	int port_id_alarm;
+
+	int count;
 } appdata_s;
 
-#define TEXT_BUF_SIZE 256
+char recv_data[100];
+
+bool _app_control_extra_data_cb(app_control_h app_control, const char *key, void *data)
+{
+	int ret;
+	char *value;
+	appdata_s *ad = data;
+	ret = app_control_get_extra_data(app_control, key, &value);
+	strcat(recv_data, key);
+	strcat(recv_data, ":");
+	strcat(recv_data, value);
+	strcat(recv_data, " / ");
+	//elm_object_text_set(ad->label, recv_data);
+	return true;
+}
+
+
+static void _no_alarm_clicked_cb(void *user_data, Evas_Object *obj, void *event_info)
+{
+	app_control_h app_control;
+	appdata_s *wid = user_data;
+
+	/* app_control is used to launch the other application */
+	app_control_create(&app_control);
+	app_control_set_operation(app_control, APP_CONTROL_OPERATION_DEFAULT);
+
+	/* 'org.example.alarm' is triggered to the app_control */
+	app_control_set_app_id(app_control, "org.example.timesettingui2");
+
+	app_control_add_extra_data(app_control, INSTANCE_ID_FOR_APP_CONTROL, wid->instance_id);
+	app_control_add_extra_data(app_control, "pet", "dog");
+	app_control_add_extra_data(app_control, "dessert", "juice");
+
+	/* Request to launch the other application */
+	if (app_control_send_launch_request(app_control, NULL, NULL) == APP_CONTROL_ERROR_NONE) {
+		dlog_print(DLOG_INFO, LOG_TAG, "Succeeded to launch a alarm");
+	} else {
+		/* This case is for Unconnected with other application */
+		appdata_s *wid = user_data;
+		dlog_print(DLOG_ERROR, LOG_TAG, "Failed to launch a alarm");
+
+		/* Get the text which you want to show on the popup */
+	}
+
+	/* Destroy the app_control after request */
+	app_control_destroy(app_control);
+
+}
+
+
+static void mouse_down_cb(void *data, Evas *e, Evas_Object *obj, void *event_info){
+
+	Evas_Event_Mouse_Down *ev = (Evas_Event_Mouse_Down *) event_info;
+	appdata_s *ad = data;
+
+	int k = (ad->count+1)%2;
+	ad->count = k;
+
+	if(k==0)
+		ad->second_needle_color = cairo_pattern_create_rgb(0.745, 0.0, 0.062);
+	else
+		ad->second_needle_color = cairo_pattern_create_rgb(0.0, 0.768, 0.062);
+
+	_no_alarm_clicked_cb(ad,NULL,NULL);
+	dlog_print(DLOG_DEFAULT, LOG_TAG, "touch");
+	dlog_print(DLOG_INFO, LOG_TAG, "touch");
+
+}
+
 
 static void
 draw_hour_needle(cairo_t *cairo, int hours, int minutes) {
@@ -45,6 +128,25 @@ draw_minute_needle(cairo_t *cairo, int minutes, int seconds) {
 	cairo_rectangle(cairo, -8, 36, 16, -13 - WATCH_RADIUS);
 	cairo_fill(cairo);
 	cairo_rotate(cairo, -angle);
+}
+
+static void
+draw_clock_graduation(cairo_t *cairo) {
+
+	cairo_pattern_t *gradu_color;
+	gradu_color = cairo_pattern_create_rgb(0.0, 0.720, 0.682);
+	cairo_set_source(cairo, gradu_color);
+	int g_width = 16;
+	int g_height = 42;
+	float angle;
+	for(int i=0;i<12;i++)
+	{
+	angle= M_PI * (((i)%12) / 6.0);
+	cairo_rotate(cairo, angle);
+	cairo_rectangle(cairo, -8, 172, 16, -g_height);
+	cairo_fill(cairo);
+	cairo_rotate(cairo, -angle);
+	}
 }
 
 static void
@@ -99,6 +201,8 @@ update_watch(appdata_s *ad, watch_time_h watch_time, int ambient)
 	} else {
 		watch_time_get_second(watch_time, &second);
 		watch_time_get_millisecond(watch_time, &millisecond);
+		draw_clock_graduation(ad->cairo);
+		cairo_set_source(ad->cairo, ad->hour_needle_color);
 		draw_minute_needle(ad->cairo, minute, second);
 		cairo_set_source(ad->cairo, ad->second_needle_color);
 		draw_second_needle(ad->cairo, second, millisecond);
@@ -122,6 +226,7 @@ update_watch(appdata_s *ad, watch_time_h watch_time, int ambient)
 static void
 create_base_gui(appdata_s *ad, int width, int height)
 {
+	ad->count = 0;
 	int ret;
 	watch_time_h watch_time = NULL;
 
@@ -149,13 +254,14 @@ create_base_gui(appdata_s *ad, int width, int height)
 	evas_object_image_size_set(ad->img, ad->width, ad->height);
 	evas_object_resize(ad->img, ad->width, ad->height);
 	evas_object_show(ad->img);
+	evas_object_event_callback_add(ad->img, EVAS_CALLBACK_MOUSE_DOWN, mouse_down_cb, ad);
 
 	ad->surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, ad->width, ad->height);
 	ad->cairo = cairo_create(ad->surface);
 
 	/* draw watch face background */
-	ad->bg_surface = cairo_image_surface_create_from_png("/opt/usr/apps/org.example.watch/res/images/clear_bg.png");
-	ad->amb_bg_surface = cairo_image_surface_create_from_png("/opt/usr/apps/org.example.watch/res/images/dark_bg.png");
+	ad->bg_surface = cairo_image_surface_create_from_png("/opt/usr/apps/org.example.watch1/res/images/clear_bg.png");
+	ad->amb_bg_surface = cairo_image_surface_create_from_png("/opt/usr/apps/org.example.watch1/res/images/dark_bg.png");
 	if (ad->bg_surface == NULL || ad->amb_bg_surface == NULL) {
 		dlog_print(DLOG_ERROR, LOG_TAG, "Could not create background image from file");
 	}
@@ -198,6 +304,8 @@ static void
 app_control(app_control_h app_control, void *data)
 {
 	/* Handle the launch request. */
+	app_control_foreach_extra_data(app_control, _app_control_extra_data_cb, data);
+
 }
 
 static void
@@ -287,4 +395,3 @@ main(int argc, char *argv[])
 
 	return ret;
 }
-
